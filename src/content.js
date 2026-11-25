@@ -15,6 +15,42 @@ const setCookie = (name, value, days = 365) => {
     document.cookie = cookie;
 };
 
+/**
+ * Expire a cookie by name across every domain/path combination it could
+ * have been set with. Cookies set by Xdebug itself (or by an IDE's
+ * XDEBUG_SESSION_START URL) are host-only, while cookies set by this
+ * extension may carry a parent domain, so a single delete is not enough.
+ */
+const deleteCookie = (name) => {
+    const expired = 'expires=Thu, 01 Jan 1970 00:00:00 GMT';
+    const hostname = window.location.hostname;
+
+    const domains = [null];
+    if (!/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(hostname) && !hostname.startsWith('[')) {
+        const parts = hostname.split('.');
+        for (let i = 0; i < parts.length; i++) {
+            domains.push(parts.slice(i).join('.'));
+        }
+    }
+
+    const paths = ['/'];
+    const segments = window.location.pathname.split('/').filter(Boolean);
+    for (let i = 1; i <= segments.length; i++) {
+        const path = '/' + segments.slice(0, i).join('/');
+        paths.push(path, `${path}/`);
+    }
+
+    for (const domain of domains) {
+        for (const path of paths) {
+            let cookie = `${name}=;${expired};path=${path}`;
+            if (domain) {
+                cookie += `;domain=${domain}`;
+            }
+            document.cookie = cookie;
+        }
+    }
+};
+
 const getDomainForCookie = () => {
     const hostname = window.location.hostname;
 
@@ -69,8 +105,20 @@ const getCurrentStatus = () => {
             xdebugProfileTrigger: DEFAULT_TRIGGER_VALUE
         }, (settings) => {
             const statusMap = getStatusMap(settings);
-            for (const [idx, { name, trigger }] of Object.entries(statusMap)) {
+            const entries = Object.entries(statusMap);
+
+            // Prefer an exact match on the configured trigger value.
+            for (const [idx, { name, trigger }] of entries) {
                 if (getCookie(name) === trigger) {
+                    resolve(+idx);
+                    return;
+                }
+            }
+
+            // Otherwise any Xdebug cookie (e.g. one set by the IDE or by
+            // Xdebug itself) still activates Xdebug, so report it as active.
+            for (const [idx, { name }] of entries) {
+                if (getCookie(name) !== null) {
                     resolve(+idx);
                     return;
                 }
@@ -90,7 +138,7 @@ const setStatus = status => {
         }, (settings) => {
             const statusMap = getStatusMap(settings);
             for (const { name } of Object.values(statusMap)) {
-                setCookie(name, null, -1); // Delete existing cookies
+                deleteCookie(name); // Delete existing cookies, wherever they were set
             }
 
             if (status > 0 && statusMap[status]) {
